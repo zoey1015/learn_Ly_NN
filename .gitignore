@@ -9,5 +9,5 @@ venv/*
 output/*
 models/lyaloss*
 *.egg-info
-verification/specs/bisect*.*
-verification/out*
+alpha-beta-CROWN/
+outputs/
