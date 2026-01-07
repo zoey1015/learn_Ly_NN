@@ -10,6 +10,7 @@ import torch
 import torch.nn as nn
 import wandb
 import itertools
+import math
 
 import neural_lyapunov_training.controllers as controllers
 import neural_lyapunov_training.dynamical_system as dynamical_system
@@ -19,9 +20,10 @@ import neural_lyapunov_training.quadrotor2d as quadrotor2d
 import neural_lyapunov_training.train_utils as train_utils
 import neural_lyapunov_training.output_train_utils as output_train_utils
 
+
 device = torch.device("cuda")
 dtype = torch.float
-
+print(f"Using device:", device)
 
 def approximate_lqr(
     quadrotor: quadrotor2d.Quadrotor2DDynamics,
@@ -97,7 +99,13 @@ def main(cfg: DictConfig):
     train_utils.set_seed(cfg.seed)
 
     dt = 0.01
-    quadrotor_continuous = quadrotor2d.Quadrotor2DDynamics()
+    #quadrotor_continuous = quadrotor2d.Quadrotor2DDynamics()
+    quadrotor_continuous = quadrotor2d.Quadrotor2DWithNSDF(
+    Lx=1.0, Ly=1.0,  # x ∈ (-1.0, 1.0)
+    zeta_max=20.0,
+    device=device
+    )
+
     dynamics = dynamical_system.SecondOrderDiscreteTimeSystem(quadrotor_continuous, dt)
 
     grid_size = torch.tensor([4, 4, 6, 5, 5, 6], device=device)
@@ -110,10 +118,23 @@ def main(cfg: DictConfig):
     K_torch = torch.from_numpy(K).type(dtype).to(device)
     S_torch = torch.from_numpy(S).type(dtype).to(device)
 
-    V = (
-        lambda x: torch.sum(x * (x @ S_torch), axis=1, keepdim=True) / 50
-    )  # Scale V_lqr to be in [0, 10]
-    u = lambda x: x @ K_torch.T + quadrotor_continuous.u_equilibrium.to(device)
+    # For NSDF: Define Lyapunov function in virtual state space
+    # Transform LQR gains to virtual space
+    def V_virtual(xi):
+        """Lyapunov function in virtual state space"""
+        # Transform virtual state to physical for LQR evaluation
+        x_phys = quadrotor_continuous.tan.inverse_transform(xi)
+        return torch.sum(x_phys * (x_phys @ S_torch), axis=1, keepdim=True) / 50
+    
+    def u_virtual(xi):
+        """Control law in virtual state space"""
+        # Transform virtual state to physical for control computation
+        x_phys = quadrotor_continuous.tan.inverse_transform(xi)
+        return x_phys @ K_torch.T + quadrotor_continuous.u_equilibrium.to(device)
+    
+    # Use virtual space functions
+    V = V_virtual
+    u = u_virtual
     controller_target = lambda x: torch.clamp(
         u(x),
         min=torch.tensor([0, 0.0], device=device),
@@ -208,7 +229,40 @@ def main(cfg: DictConfig):
         )
         # wandb.config.update(cfg)
 
-    limit_x = torch.tensor([0.75, 0.75, np.pi / 2, 4, 4, 3], dtype=dtype, device=device)
+    #def compute_zeta_bounds(F1, F2, margin=0.05):
+    #    """
+    #   Compute NSDF-transformed bounds ζ_min, ζ_max
+    #    corresponding to physical bounds (-F1, F2).
+    #    margin: small offset to avoid singularity at ±F.
+    #    """
+    #    x_lo = -F1 + margin
+    #    x_up = F2 - margin
+    #    zeta_lo = x_lo / ((F1 + x_lo) * (F2 - x_lo))
+    #    zeta_up = x_up / ((F1 + x_up) * (F2 - x_up))
+    #    return float(zeta_lo), float(zeta_up)
+    # 自动获取 ζ 边界
+    #zeta_x_lo, zeta_x_up = compute_zeta_bounds(quadrotor_continuous.Fx1, quadrotor_continuous.Fx2)
+    #zeta_y_lo, zeta_y_up = compute_zeta_bounds(quadrotor_continuous.Fy1, quadrotor_continuous.Fy2)
+
+    #print(f"[INFO] ζ_x ∈ [{zeta_x_lo:.4f}, {zeta_x_up:.4f}]")
+    #print(f"[INFO] ζ_y ∈ [{zeta_y_lo:.4f}, {zeta_y_up:.4f}]")
+    def compute_zeta_bounds_tan(alpha):
+        """
+        tan constraint: zeta = tan(pi/(2L)*x), x in (-L, L)
+        sample x in (-alpha*L, alpha*L) => zeta in [-tan(alpha*pi/2), tan(alpha*pi/2)]
+        """
+        assert 0 < alpha < 1
+        zmax = math.tan(alpha * math.pi / 2.0)
+        return -zmax, zmax
+    zeta_x_lo, zeta_x_up = compute_zeta_bounds_tan(alpha=0.95)
+    zeta_y_lo, zeta_y_up = compute_zeta_bounds_tan(alpha=0.95)
+
+    print(f"[INFO] ζ_x ∈ [{zeta_x_lo:.4f}, {zeta_x_up:.4f}]")
+    print(f"[INFO] ζ_y ∈ [{zeta_y_lo:.4f}, {zeta_y_up:.4f}]")
+
+    # For NSDF: Adjust limits to virtual state space
+    # Virtual state limits should be larger to account for NSDF transformation
+    limit_x = torch.tensor([max(abs(zeta_x_lo), abs(zeta_x_up)), max(abs(zeta_y_lo), abs(zeta_y_up)), np.pi / 2, 4, 4, 3], dtype=dtype, device=device)
     if cfg.train.train_lyaloss:
         for n in range(len(cfg.model.limit_scale)):
             limit_scale = cfg.model.limit_scale[n]
@@ -361,17 +415,38 @@ def main(cfg: DictConfig):
         x_adv = adv_x[(adv_lya < 0).squeeze()]
         logger.info(adv_lya.min().item())
 
+    #plt.clf()
+    #x0 = (
+    #    (torch.rand((40, quadrotor_continuous.nx), dtype=dtype, device=device) - 0.5)
+    #    * 2
+    #    * limit
+    #)
+    #x_traj, V_traj = models.simulate(derivative_lyaloss, 800, x0)
+    #V_traj = torch.stack(V_traj).cpu().detach().squeeze().numpy()
+    #rho = derivative_lyaloss_check.get_rho().item()
+    #V_traj = V_traj[200:, V_traj[200, :] <= rho]
+    #plt.plot(dt * np.arange(V_traj.shape[0]), V_traj)
+    #plt.savefig(os.path.join(os.getcwd(), f"V_traj_{kappa}_{candidate_scale}.png"))
     plt.clf()
-    x0 = (
-        (torch.rand((40, quadrotor_continuous.nx), dtype=dtype, device=device) - 0.5)
-        * 2
-        * limit
-    )
+    x0 = ((torch.rand((40, quadrotor_continuous.nx), dtype=dtype, device=device) - 0.5)
+         * (upper_limit - lower_limit) + (upper_limit + lower_limit)/2)
     x_traj, V_traj = models.simulate(derivative_lyaloss, 800, x0)
-    V_traj = torch.stack(V_traj).cpu().detach().squeeze().numpy()
+    V_traj = torch.stack(V_traj).detach().squeeze().cpu().numpy()  # [T, N]
     rho = derivative_lyaloss_check.get_rho().item()
-    V_traj = V_traj[200:, V_traj[200, :] <= rho]
-    plt.plot(dt * np.arange(V_traj.shape[0]), V_traj)
+    mask_cols = (V_traj[0, :] <= rho)
+    if mask_cols.any():
+       V_plot = V_traj[:, mask_cols]
+    else:
+       V_plot = V_traj
+    if V_plot.shape[1] <= 20:
+        for j in range(V_plot.shape[1]):
+            plt.plot(dt * np.arange(V_plot.shape[0]), V_plot[:, j], alpha=0.7)
+    else:
+        plt.plot(dt * np.arange(V_plot.shape[0]), V_plot.mean(axis=1), linewidth=2)
+    plt.xlabel("time (s)")
+    plt.ylabel("V")
+    plt.title(f"rho = {rho:.4f}")
+    plt.grid(True)
     plt.savefig(os.path.join(os.getcwd(), f"V_traj_{kappa}_{candidate_scale}.png"))
 
     print("rho = ", rho)
@@ -412,4 +487,11 @@ def main(cfg: DictConfig):
 
 
 if __name__ == "__main__":
+    import os, torch
+    print("RUNNING FILE:", os.path.abspath(__file__), flush=True)
+    print("CUDA available:", torch.cuda.is_available(), flush=True)
+    print("CUDA device count:", torch.cuda.device_count(), flush=True)
+    if torch.cuda.is_available():
+        print("Current device:", torch.cuda.current_device(), flush=True)
+        print("Device name:", torch.cuda.get_device_name(0), flush=True)
     main()

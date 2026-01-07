@@ -364,3 +364,121 @@ class Quadrotor2DVisualizer:
         self.ax.set_title("t = {:.1f}".format(t))
         self.ax.set_xlabel("x (m)")
         self.ax.set_ylabel("z (m)")
+"""
+Quadrotor2D with NSDF state constraints
+"""
+
+class Quadrotor2DWithNSDF(Quadrotor2DDynamics):
+    """
+    2D Quadrotor with position constraints using NSDF transformation.
+    
+    Key features:
+    - forward() accepts virtual state ξ = [ζ_x, ζ_y, θ, ẋ, ẏ, θ̇]
+    - Internally transforms to physical state for dynamics computation
+    - Returns time derivative in virtual space
+    
+    Usage:
+        dynamics = Quadrotor2DWithNSDF(Fx1=1.0, Fx2=1.0, Fy1=0.5, Fy2=1.5)
+        xi_dot = dynamics.forward(xi, u)  # ξ is virtual state
+    """
+    
+    def __init__(self, 
+                 Lx=1.0, 
+                 Ly=1.0, 
+                 zeta_max=20.0,
+                 device=None,
+                 *args, **kwargs):
+        """
+        Args:
+            Fx1, Fx2: x position bounds (-Fx1, Fx2)
+            Fy1, Fy2: y position bounds (-Fy1, Fy2)
+            *args, **kwargs: Arguments for parent Quadrotor2DDynamics
+        """
+        super().__init__(*args, **kwargs)
+
+        self.dtype = torch.float32
+        self.device = device
+        
+        from .nsdf_transform import TanTransform
+        self.tan = TanTransform(
+            Lx=Lx,
+            Ly=Ly,
+            zeta_max=zeta_max,
+            epsilon=1e-6,
+            device=self.device,
+            dtype=self.dtype
+        )
+
+        self.Lx, self.Ly = Lx, Ly
+        
+        print(f"[Quadrotor2DWithNSDF] Position constraints: "
+              f"x ∈ (-{Lx}, {Lx}), y ∈ (-{Ly}, {Ly})")
+    
+    def forward(self, xi, u) :
+        """
+        Compute acceleration in virtual space.
+        
+        Args:
+            xi: Virtual state [ζ_x, ζ_y, θ, v_x, v_y, ω] (batch_size, 6)
+            u: Control input [u1, u2] (batch_size, 2)
+        
+        Returns:
+            xi_ddot: Virtual acceleration [ζ̈_x, ζ̈_y, θ̈] (batch_size, 3)
+            
+        Note: This matches the interface expected by SecondOrderDiscreteTimeSystem,
+        which expects forward() to return accelerations only (3D), not full state
+        derivatives (6D).
+        """
+        # 1. Transform to physical space
+        x_phys = self.tan.inverse_transform(xi)
+        
+        # 2. Compute physical accelerations using parent class
+        x_ddot_phys = super().forward(x_phys, u)  # Returns [ẍ, ÿ, θ̈] (3D)
+        
+        # 3. Transform position accelerations to virtual space using complete chain rule
+        # Chain rule: ζ̈ = d/dt(μ·ẋ) = μ·ẍ + (dμ/dt)·ẋ
+        mu_x, mu_y = self.tan.compute_mu(xi)
+        dmu_dx, dmu_dy = self.tan.compute_dmu_dx(xi)
+        
+        # Extract velocities from virtual state (positions 3,4 are velocities)
+        vx_phys = xi[:, 3]  # Physical velocity in x
+        vy_phys = xi[:, 4]  # Physical velocity in y
+        
+        # Complete chain rule: ζ̈ = μ·ẍ + (dμ/dx)·ẋ·ẋ
+        xi_ddot = torch.zeros_like(x_ddot_phys)
+        xi_ddot[:, 0] = mu_x * x_ddot_phys[:, 0] + dmu_dx * vx_phys * vx_phys  # ζ̈_x
+        xi_ddot[:, 1] = mu_y * x_ddot_phys[:, 1] + dmu_dy * vy_phys * vy_phys  # ζ̈_y
+        xi_ddot[:, 2] = x_ddot_phys[:, 2]  # θ̈ (unchanged)
+        
+        return xi_ddot
+    
+    def get_virtual_equilibrium(self) -> torch.Tensor:
+        """
+        Get equilibrium point in virtual state space.
+        
+        Since ζ(0) = 0, the virtual equilibrium is at origin.
+        
+        Returns:
+            xi_eq: [0, 0, 0, 0, 0, 0]
+        """
+        return torch.zeros(6, dtype=self.dtype, device=self.device)
+    
+    def check_constraint_violation(self, xi) :
+        """
+        Check if virtual state corresponds to constraint violation.
+        
+        Args:
+            xi: Virtual state (batch_size, 6)
+        
+        Returns:
+            violation: Boolean tensor indicating violation (batch_size,)
+        """
+        # Transform to physical state
+        x_phys = self.nsdf.inverse_transform(xi)
+        x = x_phys[:, 0]
+        y = x_phys[:, 1]
+        
+        violation = (x <= -self.Fx1) | (x >= self.Fx2) | \
+                   (y <= -self.Fy1) | (y >= self.Fy2)
+        
+        return violation
