@@ -22,6 +22,7 @@ import neural_lyapunov_training.pendulum as pendulum
 import neural_lyapunov_training.quadrotor2d as quadrotor2d
 import neural_lyapunov_training.path_tracking as path_tracking
 import neural_lyapunov_training.pvtol as pvtol
+from quadrotor3d_dynamic.pos import Position_x_dynamic
 
 from neural_lyapunov_training.controllers import LinearController
 
@@ -602,6 +603,19 @@ def create_quadrotor3d_model(**kwargs):
     return create_model(
         Quadrotor3DDynamics(dtype=torch.float32),
         # pretrained_path='lyaloss_quadroter2d.pth',
+        **kwargs,
+    )
+
+
+def create_quadrotor3d_pos_x_model(dt=0.01, mass=0.486, gravity=9.81, **kwargs):
+    """
+    Build the computational graph for verification/training of the Quadrotor3D x-axis position subsystem.
+    """
+    return create_model(
+        dynamical_system.SecondOrderDiscreteTimeSystem(
+            Position_x_dynamic(mass=mass, gravity=gravity),
+            dt=dt,
+        ),
         **kwargs,
     )
 

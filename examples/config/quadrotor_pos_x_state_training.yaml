@@ -1,0 +1,165 @@
+defaults:
+  - user: quadrotor_pos_x_state_training_default
+  - train_template
+
+hydra:
+  run:
+    dir: ${user.run_dir}
+  sweep:
+    dir: ${user.run_dir}
+  job:
+    chdir: True
+
+wandb_name: quadrotor_pos_x
+
+# 是否执行 LQR 近似预训练
+approximate_lqr: True
+
+pgd_verifier_steps: 300
+
+model:
+  # 轴标识
+  axis: x
+  
+  # 物理参数
+  mass: 0.486
+  gravity: 9.81
+  dt: 0.01
+  
+  # 积分方法
+  position_integration: "ExplicitEuler"
+  velocity_integration: "ExplicitEuler"
+  
+  # 兴趣区域: 位置 ±2m, 速度 ±3m/s
+  limit: [2.0, 3.0]
+  
+  # 渐进式训练的缩放因子
+  limit_scale: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+  
+  # 控制器网络
+  controller_nlayer: 3
+  controller_hidden_dim: 16
+  u_lo: [-20.0]   # 控制量下界 (m/s^2)
+  u_up: [20.0]    # 控制量上界 (m/s^2)
+  
+  # Lyapunov 网络
+  lyapunov:
+    quadratic: False
+    hidden_widths: [16, 16, 8]
+    R_rows: 2
+  
+  V_psd_form: "L1"
+  
+  # LQR 参数（用于预训练）
+  lqr:
+    Q: [10.0, 1.0]    # 位置误差权重大，速度误差权重小
+    R: [1.0]
+  
+  # Lyapunov 参数
+  kappa: 0.01
+  rho_multiplier: 1.5
+  V_decrease_within_roa: True
+  
+  # 加载预训练权重（可选）
+  load_lyaloss: ${user.load_lyaloss}
+  load_controller: null
+  load_lyapunov: null
+
+# 预训练参数
+pretrain:
+  lr: 0.01
+  max_iter: 500
+
+# 训练参数
+train:
+  enabled: True
+  train_lyaloss: True
+  hard_max: True
+  
+  learning_rate: 0.001
+  lr_controller: 0.0001
+  weight_decay: 0.0
+  lr_scheduler: False
+  
+  max_iter: 30
+  pgd_steps: 150
+  buffer_size: 131072
+  batch_size: 1024
+  epochs: 100
+  samples_per_iter: 16384
+  
+  num_samples_per_boundary: 1024
+  Vmin_x_pgd_buffer_size: 65536
+  Vmin_x_pgd_path: ${user.Vmin_x_pgd_path}
+  derivative_x_buffer_path: ${user.derivative_x_buffer_path}
+  
+  grid_size: [50, 50]
+  
+  wandb:
+    enabled: ${user.wandb_enabled}
+    project: "quadrotor-position-control"
+    entity: ${user.wandb_entity}
+    name: "pos_x_training"
+
+# 损失函数参数
+loss:
+  ibp_ratio_derivative: 0.0
+  sample_ratio_derivative: 1.0
+  ibp_ratio_positivity: 0.0
+  sample_ratio_positivity: 0.0
+  
+  Vmin_x_boundary_weight: 0.0
+  Vmax_x_boundary_weight: 0.0
+  
+  l1_reg: 0.001
+  candidate_roa_states_weight: 0.001
+  candidate_scale: 1.0
+  always_candidate_roa_regulizer: False
+  
+  # ROA 候选状态（会乘以 limit_scale）
+  candidate_roa_states:
+    - [1.0, 0.0]
+    - [-1.0, 0.0]
+    - [0.0, 1.0]
+    - [0.0, -1.0]
+    - [1.0, 1.0]
+    - [-1.0, -1.0]
+    - [1.0, -1.0]
+    - [-1.0, 1.0]
+    - [2.0, 0.0]
+    - [-2.0, 0.0]
+    - [0.0, 3.0]
+    - [0.0, -3.0]
+    - [1.5, 2.0]
+    - [-1.5, -2.0]
+    - [2.0, 3.0]
+    - [-2.0, -3.0]
+
+# 评估参数（用于最终输出 u_best）
+eval:
+  enabled: True
+  # 评估状态点: [position, velocity]
+  states:
+    - [0.0, 0.0]       # 平衡点
+    - [1.0, 0.0]       # 位置偏移
+    - [-1.0, 0.0]
+    - [0.0, 1.0]       # 速度偏移
+    - [0.0, -1.0]
+    - [1.0, 1.0]       # 对角
+    - [-1.0, -1.0]
+    - [2.0, 0.0]       # 边界位置
+    - [-2.0, 0.0]
+    - [0.0, 3.0]       # 边界速度
+    - [0.0, -3.0]
+    - [2.0, 3.0]       # 边界角点
+    - [-2.0, -3.0]
+    - [2.0, -3.0]
+    - [-2.0, 3.0]
+    - [0.5, 0.5]       # 中间点
+    - [-0.5, -0.5]
+  
+  # 轨迹仿真参数
+  sim_steps: 500
+  plot_results: True
+
+seed: 0

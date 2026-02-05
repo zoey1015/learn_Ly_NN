@@ -1,0 +1,142 @@
+defaults:
+  - user: quadrotor_pos_z_state_training_default
+  - train_template
+
+hydra:
+  run:
+    dir: ${user.run_dir}
+  sweep:
+    dir: ${user.run_dir}
+  job:
+    chdir: True
+
+wandb_name: quadrotor_pos_z
+
+# 是否执行 LQR 近似预训练
+approximate_lqr: False
+
+pgd_verifier_steps: 300
+
+seed: 0
+
+model:
+  # 轴标识
+  axis: z
+  
+  # 物理参数
+  mass: 0.486
+  gravity: 9.81
+  dt: 0.01
+  
+  # 积分方法
+  position_integration: "ExplicitEuler"
+  velocity_integration: "ExplicitEuler"
+  
+  # 兴趣区域: 位置 ±2m, 速度 ±2m/s
+  limit: [2.0, 2.5]
+  
+  # 渐进式训练的缩放因子（参考2D四旋翼：8个阶段）
+  limit_scale: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]
+  
+  # 控制器网络（参考2D四旋翼：更小的网络）
+  controller_nlayer: 2
+  controller_hidden_dim: 8
+  # Z轴控制量范围需要考虑重力补偿
+  # 平衡点 u* = g ≈ 9.81
+  u_lo: [-10.0]   # 向下最大加速度约 -10 - 9.81 ≈ -19.81 m/s^2
+  u_up: [30.0]    # 向上最大加速度约 30 - 9.81 ≈ 20.19 m/s^2
+  
+  # Lyapunov 网络
+  lyapunov:
+    quadratic: False
+    hidden_widths: [16, 16, 8]
+    R_rows: 2
+  
+  V_psd_form: "L1"
+  
+  # LQR 参数（用于预训练）
+  lqr:
+    Q: [10.0, 1.0]
+    R: [1.0]
+  
+  # Lyapunov 参数（参考2D四旋翼）
+  kappa: 0.01
+  rho_multiplier: 2.0
+  V_decrease_within_roa: True
+  
+  # 加载预训练权重（可选）
+  load_lyaloss: ${user.load_lyaloss}
+  load_controller: null
+  load_lyapunov: null
+
+# 预训练参数
+pretrain:
+  lr: 0.01
+  max_iter: 500
+
+# 训练参数（参考2D四旋翼）
+train:
+  enabled: True
+  train_lyaloss: True
+  hard_max: True
+  
+  learning_rate: 0.001
+  lr_controller: 0.0001
+  weight_decay: 0.0
+  lr_scheduler: False
+  
+  # 每个阶段的迭代次数（列表形式，对应8个limit_scale）
+  max_iter: [50, 50, 50, 50, 30, 30, 30, 30]
+  pgd_steps: 100
+  buffer_size: 65536
+  batch_size: 1024
+  epochs: 100
+  samples_per_iter: 4096
+  
+  num_samples_per_boundary: 500
+  Vmin_x_pgd_buffer_size: 65536
+  Vmin_x_pgd_path: ${user.Vmin_x_pgd_path}
+  derivative_x_buffer_path: ${user.derivative_x_buffer_path}
+  
+  grid_size: [50, 50]
+  
+  wandb:
+    enabled: ${user.wandb_enabled}
+    project: "quadrotor-position-control"
+    entity: ${user.wandb_entity}
+    name: "pos_z_training"
+
+# 损失函数参数（参考2D四旋翼）
+loss:
+  ibp_ratio_derivative: 0.0
+  sample_ratio_derivative: 1.0
+  ibp_ratio_positivity: 0.0
+  sample_ratio_positivity: 0.0
+  
+  Vmin_x_boundary_weight: 0.0
+  Vmax_x_boundary_weight: 0.0
+  
+  # 列表形式，对应8个limit_scale阶段
+  l1_reg: [0.001, 0.001, 0.001, 0.001, 0.002, 0.002, 0.003, 0.005]
+  candidate_roa_states_weight: [0.0005, 0.001, 0.001, 0.001, 0.002, 0.002, 0.002, 0.002]
+  candidate_scale: 2.0
+  always_candidate_roa_regulizer: False
+  
+  # ROA 候选状态
+  candidate_roa_states:
+    - [1.0, 0.0]
+    - [-1.0, 0.0]
+    - [0.0, 1.0]
+    - [0.0, -1.0]
+    - [1.0, 1.0]
+    - [-1.0, -1.0]
+    - [1.0, -1.0]
+    - [-1.0, 1.0]
+    - [2.0, 0.0]
+    - [-2.0, 0.0]
+    - [0.0, 3.0]
+    - [0.0, -3.0]
+    - [1.5, 2.0]
+    - [-1.5, -2.0]
+    - [2.0, 3.0]
+    - [-2.0, -3.0]

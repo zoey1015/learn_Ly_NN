@@ -1,0 +1,118 @@
+defaults:
+  - user: quadrotor_pos_y_state_training_default
+  - train_template
+
+hydra:
+  run:
+    dir: ${user.run_dir}
+  sweep:
+    dir: ${user.run_dir}
+  job:
+    chdir: True
+
+wandb_name: quadrotor_pos_y
+
+approximate_lqr: True
+pgd_verifier_steps: 300
+
+model:
+  axis: y
+  mass: 0.486
+  gravity: 9.81
+  dt: 0.01
+  
+  position_integration: "ExplicitEuler"
+  velocity_integration: "ExplicitEuler"
+  
+  limit: [2.0, 3.0]
+  limit_scale: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+  
+  controller_nlayer: 3
+  controller_hidden_dim: 16
+  u_lo: [-20.0]
+  u_up: [20.0]
+  
+  lyapunov:
+    quadratic: False
+    hidden_widths: [16, 16, 8]
+    R_rows: 2
+  
+  V_psd_form: "L1"
+  
+  lqr:
+    Q: [10.0, 1.0]
+    R: [1.0]
+  
+  kappa: 0.01
+  rho_multiplier: 1.5
+  V_decrease_within_roa: True
+  
+  load_lyaloss: ${user.load_lyaloss}
+  load_controller: null
+  load_lyapunov: null
+
+pretrain:
+  lr: 0.01
+  max_iter: 500
+
+train:
+  enabled: True
+  train_lyaloss: True
+  hard_max: True
+  learning_rate: 0.001
+  lr_controller: 0.0001
+  weight_decay: 0.0
+  lr_scheduler: False
+  max_iter: 30
+  pgd_steps: 150
+  buffer_size: 131072
+  batch_size: 1024
+  epochs: 100
+  samples_per_iter: 16384
+  num_samples_per_boundary: 1024
+  Vmin_x_pgd_buffer_size: 65536
+  Vmin_x_pgd_path: ${user.Vmin_x_pgd_path}
+  derivative_x_buffer_path: ${user.derivative_x_buffer_path}
+  grid_size: [50, 50]
+  
+  wandb:
+    enabled: ${user.wandb_enabled}
+    project: "quadrotor-position-control"
+    entity: ${user.wandb_entity}
+    name: "pos_y_training"
+
+loss:
+  ibp_ratio_derivative: 0.0
+  sample_ratio_derivative: 1.0
+  ibp_ratio_positivity: 0.0
+  sample_ratio_positivity: 0.0
+  Vmin_x_boundary_weight: 0.0
+  Vmax_x_boundary_weight: 0.0
+  l1_reg: 0.001
+  candidate_roa_states_weight: 0.001
+  candidate_scale: 1.0
+  always_candidate_roa_regulizer: False
+  candidate_roa_states:
+    - [1.0, 0.0]
+    - [-1.0, 0.0]
+    - [0.0, 1.0]
+    - [0.0, -1.0]
+    - [1.0, 1.0]
+    - [-1.0, -1.0]
+    - [2.0, 3.0]
+    - [-2.0, -3.0]
+
+eval:
+  enabled: True
+  states:
+    - [0.0, 0.0]
+    - [1.0, 0.0]
+    - [-1.0, 0.0]
+    - [0.0, 1.0]
+    - [0.0, -1.0]
+    - [2.0, 3.0]
+    - [-2.0, -3.0]
+  sim_steps: 500
+  plot_results: True
+
+seed: 0
