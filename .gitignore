@@ -11,3 +11,4 @@ models/lyaloss*
 *.egg-info
 alpha-beta-CROWN/
 outputs/
+pretrain/
